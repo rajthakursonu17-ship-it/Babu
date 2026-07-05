@@ -294,8 +294,13 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 async def _safe_edit(q, text, reply_markup=None):
     try:
         await q.edit_message_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
-    except Exception:
-        await q.message.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+    except Exception as e:
+        if "not modified" in str(e).lower():
+            return
+        try:
+            await q.message.reply_text(text, reply_markup=reply_markup, parse_mode=ParseMode.HTML)
+        except Exception:
+            pass
 
 
 # ───────────────────────── content delivery ─────────────────────────
