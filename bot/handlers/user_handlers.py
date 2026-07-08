@@ -333,7 +333,7 @@ async def _deliver_content(update, context, user, data):
         return
 
     if kind == "pdf":
-        # prefer copy_message from channel if we captured pdf_message_id
+        # 1) copy from channel if we have message_id
         if lec.get("pdf_message_id") and lec.get("channel_id"):
             try:
                 await context.bot.copy_message(
@@ -345,6 +345,18 @@ async def _deliver_content(update, context, user, data):
                 return
             except Exception as e:
                 logger.warning("pdf copy_message failed: %s", e)
+        # 2) direct file_id (admin uploaded via DM)
+        if lec.get("pdf_file_id"):
+            try:
+                await context.bot.send_document(
+                    q.message.chat_id, lec["pdf_file_id"],
+                    caption=f"📄 {lec['name']} — Notes",
+                )
+                _bump_open_counter(user, mode, batch_id)
+                return
+            except Exception as e:
+                logger.warning("pdf send_document failed: %s", e)
+        # 3) external URL
         link = lec.get("pdf_link")
         if not link:
             await q.answer("PDF not available", show_alert=True); return
@@ -368,6 +380,16 @@ async def _deliver_content(update, context, user, data):
                 return
             except Exception as e:
                 logger.warning("dpp copy_message failed: %s", e)
+        if lec.get("dpp_file_id"):
+            try:
+                await context.bot.send_document(
+                    q.message.chat_id, lec["dpp_file_id"],
+                    caption=f"🧪 {lec['name']} — DPP",
+                )
+                _bump_open_counter(user, mode, batch_id)
+                return
+            except Exception as e:
+                logger.warning("dpp send_document failed: %s", e)
         link = lec.get("dpp_link")
         if not link:
             await q.answer("DPP not available", show_alert=True); return

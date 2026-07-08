@@ -26,12 +26,17 @@ if settings.GROQ_API_KEY:
 
 
 _SYSTEM = (
-    "You extract structured lecture metadata from a Telegram caption. "
+    "You extract structured lecture metadata from a Telegram caption or filename. "
     "Return STRICT JSON with keys: subject, chapter, lecture. "
-    "Use null if a field is not clearly present. "
-    "Subject = academic subject (Physics, Chemistry, Maths, Biology, English, etc). "
-    "Chapter = chapter name/number. "
-    "Lecture = full lecture title/name. Do not invent fields."
+    "Rules: "
+    "1) subject = academic subject (Physics, Chemistry, Maths, Biology, English, Reasoning, Accounts, etc.) OR null. "
+    "2) chapter = CHAPTER NAME ONLY, without lecture words. If caption has 'Chapter 1 - Kinematics - Lecture 3', "
+    "   chapter = 'Chapter 1 - Kinematics'.  If caption says 'Simple Interest Part 2', chapter = 'Simple Interest'. "
+    "   Group related topics under one chapter — e.g. 'Simple Interest Part 1' and 'Simple Interest Part 2' "
+    "   both belong to chapter 'Simple Interest'. Never invent numbers. "
+    "3) lecture = the full lecture/title (e.g. 'Lecture 3 - Kinematics Part 2'). "
+    "Never leave chapter blank if a subject-like topic is present in the caption. "
+    "Never return the words 'General' or 'Unknown'. Return null instead."
 )
 
 

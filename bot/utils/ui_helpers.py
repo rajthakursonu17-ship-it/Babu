@@ -53,9 +53,9 @@ def lectures_kb(chapter_id: int, subject_id: int, lectures) -> InlineKeyboardMar
 def lecture_actions_kb(lecture: dict, chapter_id: int) -> InlineKeyboardMarkup:
     rows = [[("🎥 Watch Video", f"watch:{lecture['lecture_id']}")]]
     extras = []
-    if lecture.get("pdf_link") or lecture.get("pdf_message_id"):
+    if lecture.get("pdf_link") or lecture.get("pdf_message_id") or lecture.get("pdf_file_id"):
         extras.append(("📄 Notes PDF", f"pdf:{lecture['lecture_id']}"))
-    if lecture.get("dpp_link") or lecture.get("dpp_message_id"):
+    if lecture.get("dpp_link") or lecture.get("dpp_message_id") or lecture.get("dpp_file_id"):
         extras.append(("🧪 DPP", f"dpp:{lecture['lecture_id']}"))
     if extras:
         rows.append(extras)

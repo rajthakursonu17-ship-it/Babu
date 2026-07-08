@@ -119,13 +119,16 @@ def _home_kb() -> InlineKeyboardMarkup:
 
 def _crud_kb(section: str) -> InlineKeyboardMarkup:
     emoji = {"batch": "📚", "subject": "📖", "chapter": "📝", "lecture": "🎥"}[section]
-    return _kb([
+    rows = [
         [(f"➕ Add {section.title()}", f"adm:add:{section}")],
         [("📋 List", f"adm:list:{section}"), ("✏️ Edit", f"adm:edit:{section}")],
         [("🗑 Delete", f"adm:del:{section}")]
-        + ([("📥 Bulk Add", "adm:bulk:lecture")] if section == "lecture" else []),
-        [("🏠 Menu", "adm:home")],
-    ])
+    ]
+    if section == "lecture":
+        rows[-1].append(("📥 Bulk Add", "adm:bulk:lecture"))
+        rows.append([("📎 Attach PDF/DPP", "adm:attach:lecture")])
+    rows.append([("🏠 Menu", "adm:home")])
+    return _kb(rows)
 
 
 # ═════════════ text-input router ═════════════
@@ -178,6 +181,30 @@ async def admin_photo_router(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await _finalize_add_batch(update, context, st)
     else:
         await _finalize_edit_batch(update, context, st, "image_file_id", file_id)
+
+
+async def admin_document_router(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handles a document (PDF) uploaded by admin during an attach_doc flow."""
+    uid = update.effective_user.id
+    if not is_admin_user(uid) or not is_admin_session(uid):
+        return
+    st = ADMIN_STATE.get(uid)
+    if not st or st.get("action") != "attach_doc":
+        return
+    doc = update.message.document
+    if not doc:
+        await update.message.reply_text("Please send it as a document (file).")
+        return
+    lec_id = st["data"]["lecture_id"]
+    slot = st["data"]["slot"]
+    field = "pdf_file_id" if slot == "notes" else "dpp_file_id"
+    db.execute(f"UPDATE lectures SET {field}=%s WHERE lecture_id=%s",
+               (doc.file_id, lec_id))
+    _reset(uid)
+    await update.message.reply_text(
+        f"✅ {slot.upper()} attached to lecture #{lec_id}.",
+        reply_markup=_home_kb(),
+    )
 
 
 # ═════════════ callback router ═════════════
@@ -245,6 +272,18 @@ async def on_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # bulk lecture entry point → pick chapter first
     if data == "adm:bulk:lecture":
         await _pick_chapter_for(uid, q, purpose="bulk"); return
+
+    # attach PDF/DPP to a lecture (admin uploads a doc)
+    if data == "adm:attach:lecture":
+        await _pick_lecture_for(uid, q, purpose="attach_choose"); return
+    if data.startswith("adm:attachslot:"):
+        _, _, lid, slot = data.split(":")
+        ADMIN_STATE[uid] = {"action": "attach_doc", "step": "upload",
+                            "data": {"lecture_id": int(lid), "slot": slot}}
+        await _safe_edit(q,
+            f"📎 Send the <b>{slot.upper()} PDF</b> to me now (as a document).\n"
+            f"It will be attached to lecture #{lid}.",
+            _kb([NAV])); return
 
     # picker callbacks: adm:pick:<section>:<id>[:<purpose>]
     if data.startswith("adm:pick:"):
@@ -592,6 +631,29 @@ async def _handle_pick(uid, q, data: str) -> None:
             f"Default channel: <code>{default_channel}</code>\n"
             f"Type <code>done</code> to finish.",
             _kb([[("✅ Done", "adm:home")]])); return
+
+    if purpose == "attach_choose":
+        # `iid` here is the lecture_id
+        lec = db.query(
+            "SELECT lecture_id, name, pdf_message_id, dpp_message_id, "
+            "       pdf_file_id, dpp_file_id "
+            "FROM lectures WHERE lecture_id=%s", (iid,), one=True,
+        )
+        if not lec:
+            await _safe_edit(q, "Lecture not found.", _home_kb()); return
+        pdf_set = bool(lec["pdf_message_id"] or lec["pdf_file_id"])
+        dpp_set = bool(lec["dpp_message_id"] or lec["dpp_file_id"])
+        await _safe_edit(q,
+            f"📎 <b>{lec['name']}</b>\n\n"
+            f"Notes PDF: {'✅ set' if pdf_set else '❌ empty'}\n"
+            f"DPP PDF:   {'✅ set' if dpp_set else '❌ empty'}\n\n"
+            f"Which slot to fill?",
+            _kb([
+                [("📄 Attach Notes",  f"adm:attachslot:{iid}:notes")],
+                [("🧪 Attach DPP",    f"adm:attachslot:{iid}:dpp")],
+                [("🏠 Menu", "adm:home")],
+            ]))
+        return
 
     # edit flow — show field picker
     if purpose.startswith("edit_"):

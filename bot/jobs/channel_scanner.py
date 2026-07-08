@@ -252,7 +252,7 @@ async def on_channel_post(update, context) -> None:
     if kind == "video":
         caption = _caption_of(msg) or f"Lecture {msg.message_id}"
         parsed = groq_parser.parse_caption(caption)
-        chap_name = parsed.get("chapter") or "General"
+        chap_name = parsed.get("chapter") or "Uncategorised"
         lec_name = (parsed.get("lecture")
                     or caption.split("\n")[0][:120]
                     or f"Lecture {msg.message_id}")
@@ -266,13 +266,16 @@ async def on_channel_post(update, context) -> None:
                         ch_id, msg.message_id, lec_id, lec_name)
             # attach any pending docs that arrived before this video
             pend = cap.get("pending_docs") or []
+            attached = 0
             for pmsg_id, ptype in pend:
-                await _attach_doc_to_lecture(lec_id, ch_id, pmsg_id, ptype)
+                if await _attach_doc_to_lecture(lec_id, ch_id, pmsg_id, None, None):
+                    attached += 1
             cap["pending_docs"] = []
-            # DM admin
+            # DM admin with running total
             await _dm(context.bot, cap["admin_id"],
-                f"🎥 Captured: <b>{lec_name}</b> (lec #{lec_id})"
-                + (f"\n📎 Also attached {len(pend)} earlier document(s)." if pend else ""))
+                f"🎥 <b>#{cap['count']}. {lec_name}</b> captured\n"
+                f"📁 Chapter: <i>{chap_name}</i>"
+                + (f"\n📎 +{attached} pending doc(s) attached" if attached else ""))
         return
 
     # ── PDF/document → attach to last lecture, or buffer ──
@@ -283,11 +286,12 @@ async def on_channel_post(update, context) -> None:
             logger.info("[livecap] buffered pre-video doc mid=%s (queue size=%d)",
                         msg.message_id, len(cap["pending_docs"]))
             await _dm(context.bot, cap["admin_id"],
-                f"📎 Buffered document (msg {msg.message_id}). "
-                f"It will attach to the next video you post. "
-                f"Queue: {len(cap['pending_docs'])}")
+                f"📎 Buffered doc → will attach to next video (queue: {len(cap['pending_docs'])})")
             return
-        await _attach_doc_to_lecture(lec_id, ch_id, msg.message_id, "doc")
+        slot = await _attach_doc_to_lecture(lec_id, ch_id, msg.message_id, None, None)
+        if slot:
+            await _dm(context.bot, cap["admin_id"],
+                f"📎 <b>{slot.upper()}</b> attached to lecture #{lec_id}")
         return
 
     # ── URL text ──
@@ -303,30 +307,44 @@ async def on_channel_post(update, context) -> None:
         if not cur["pdf_link"]:
             db.execute("UPDATE lectures SET pdf_link=%s WHERE lecture_id=%s", (url, lec_id))
             logger.info("[livecap] pdf_link attached -> lecture %s", lec_id)
+            await _dm(context.bot, cap["admin_id"], f"🔗 PDF link attached to lecture #{lec_id}")
         elif not cur["dpp_link"]:
             db.execute("UPDATE lectures SET dpp_link=%s WHERE lecture_id=%s", (url, lec_id))
             logger.info("[livecap] dpp_link attached -> lecture %s", lec_id)
+            await _dm(context.bot, cap["admin_id"], f"🔗 DPP link attached to lecture #{lec_id}")
 
 
 async def _attach_doc_to_lecture(lec_id: int, channel_id: int,
-                                 msg_id: int, ptype: str) -> None:
+                                 msg_id: int | None, file_id: str | None,
+                                 _unused=None) -> str | None:
+    """Attach a document either by (channel_id, msg_id) or by file_id.
+    Returns 'notes' / 'dpp' if attached, None if both slots full."""
     cur = db.query(
-        "SELECT pdf_message_id, dpp_message_id FROM lectures WHERE lecture_id=%s",
+        "SELECT pdf_message_id, dpp_message_id, pdf_file_id, dpp_file_id "
+        "FROM lectures WHERE lecture_id=%s",
         (lec_id,), one=True,
     )
     if not cur:
-        return
-    if not cur["pdf_message_id"]:
-        db.execute("UPDATE lectures SET pdf_message_id=%s WHERE lecture_id=%s",
-                   (msg_id, lec_id))
-        logger.info("[livecap] pdf attached mid=%s -> lecture %s", msg_id, lec_id)
-    elif not cur["dpp_message_id"]:
-        db.execute("UPDATE lectures SET dpp_message_id=%s WHERE lecture_id=%s",
-                   (msg_id, lec_id))
-        logger.info("[livecap] dpp attached mid=%s -> lecture %s", msg_id, lec_id)
-    else:
-        logger.info("[livecap] both slots full — extra doc mid=%s dropped from lecture %s",
-                    msg_id, lec_id)
+        return None
+    if not cur["pdf_message_id"] and not cur["pdf_file_id"]:
+        if msg_id is not None:
+            db.execute("UPDATE lectures SET pdf_message_id=%s WHERE lecture_id=%s",
+                       (msg_id, lec_id))
+        else:
+            db.execute("UPDATE lectures SET pdf_file_id=%s WHERE lecture_id=%s",
+                       (file_id, lec_id))
+        logger.info("[attach] notes -> lecture %s", lec_id)
+        return "notes"
+    if not cur["dpp_message_id"] and not cur["dpp_file_id"]:
+        if msg_id is not None:
+            db.execute("UPDATE lectures SET dpp_message_id=%s WHERE lecture_id=%s",
+                       (msg_id, lec_id))
+        else:
+            db.execute("UPDATE lectures SET dpp_file_id=%s WHERE lecture_id=%s",
+                       (file_id, lec_id))
+        logger.info("[attach] dpp -> lecture %s", lec_id)
+        return "dpp"
+    return None
 
 
 async def _fallback_index(update, context) -> None:
@@ -373,9 +391,9 @@ async def check_channel_access(bot: Bot, channel_id: int) -> str:
 
 
 # ═════════════ historical scanner (unchanged from previous version) ═════════════
-MAX_CONSEC_MISSING = 80
-PROGRESS_EVERY_N   = 25
-POLL_DELAY_S       = 0.04
+MAX_CONSEC_MISSING = 500          # be exhaustive, don't skip anything
+PROGRESS_EVERY_N   = 10           # more frequent live updates
+POLL_DELAY_S       = 0.015        # 3× faster than before
 
 
 async def _probe_top(bot: Bot, channel_id: int) -> tuple[int, str]:

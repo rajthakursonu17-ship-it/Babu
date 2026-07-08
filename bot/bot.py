@@ -83,6 +83,10 @@ def build_app() -> Application:
         filters.PHOTO & admin_only_filter,
         ah.admin_photo_router,
     ))
+    app.add_handler(MessageHandler(
+        filters.Document.ALL & admin_only_filter,
+        ah.admin_document_router,
+    ))
 
     # ── SWEEPER ─────────────
     app.job_queue.run_repeating(sweeper_job, interval=300, first=30, name="sweeper")

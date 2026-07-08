@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS lectures (
 -- add columns for legacy DBs
 ALTER TABLE lectures ADD COLUMN IF NOT EXISTS pdf_message_id BIGINT;
 ALTER TABLE lectures ADD COLUMN IF NOT EXISTS dpp_message_id BIGINT;
+ALTER TABLE lectures ADD COLUMN IF NOT EXISTS pdf_file_id TEXT;
+ALTER TABLE lectures ADD COLUMN IF NOT EXISTS dpp_file_id TEXT;
 
 CREATE TABLE IF NOT EXISTS user_lecture_access (
     id              BIGSERIAL PRIMARY KEY,
