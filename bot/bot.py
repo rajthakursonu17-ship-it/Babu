@@ -29,17 +29,24 @@ logger = logging.getLogger("shriji-bot")
 
 async def _bootstrap_settings() -> None:
     rows = db.query("SELECT key, value FROM settings")
-    keys = {"FREE_TRIAL_HOURS", "FREE_TRIAL_OPEN_LIMIT", "PAID_OPEN_LIMIT",
-            "LECTURE_DELETE_AFTER_HOURS", "SLIDING_WINDOW_SIZE", "REFER_BONUS_HOURS"}
+    int_keys = {"FREE_TRIAL_HOURS", "FREE_TRIAL_OPEN_LIMIT", "PAID_OPEN_LIMIT",
+                "LECTURE_DELETE_AFTER_HOURS", "SLIDING_WINDOW_SIZE", "REFER_BONUS_HOURS"}
     for r in rows:
         k = r["key"]
-        if k in keys:
+        if k in int_keys:
             try:
                 setattr(settings, k, int(r["value"]))
             except ValueError:
                 pass
         elif k == "ADMIN_PASSWORD":
             settings.ADMIN_PASSWORD = r["value"]
+        elif k == "ADMIN_CONTACT":
+            settings.ADMIN_CONTACT = r["value"]
+        elif k == "EXTRA_ADMIN_IDS":
+            for tok in (r["value"] or "").split(","):
+                tok = tok.strip()
+                if tok.isdigit() or (tok.startswith("-") and tok[1:].isdigit()):
+                    settings.ADMIN_IDS.add(int(tok))
 
 
 async def sweeper_job(context) -> None:
@@ -74,7 +81,10 @@ def build_app() -> Application:
     ))
 
     # ── ADMIN FREE-FORM INPUT (only for admin users, non-command) ─────
-    admin_only_filter = filters.User(list(settings.ADMIN_IDS))
+    class _IsAdmin(filters.MessageFilter):
+        def filter(self, message):
+            return message.from_user and message.from_user.id in settings.ADMIN_IDS
+    admin_only_filter = _IsAdmin()
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND & admin_only_filter,
         ah.admin_text_router,

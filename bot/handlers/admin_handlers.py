@@ -160,6 +160,8 @@ async def admin_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "broadcast": _step_broadcast,
         "set_setting": _step_set_setting,
         "set_pw": _step_set_pw,
+        "set_contact": _step_set_contact,
+        "admin_add": _step_admin_add,
         "scan": _step_scan,
         "check_rights": _step_check_rights,
         "search_user": _step_search_user,
@@ -353,6 +355,44 @@ async def on_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if data == "adm:settings:pw":
         ADMIN_STATE[uid] = {"action": "set_pw", "step": "value", "data": {}}
         await _safe_edit(q, "🔑 Send the <b>new admin password</b>.", _kb([NAV])); return
+    if data == "adm:settings:contact":
+        ADMIN_STATE[uid] = {"action": "set_contact", "step": "value", "data": {}}
+        await _safe_edit(q,
+            "📞 Send the <b>admin contact</b> shown to buyers (e.g. "
+            "<code>@yourusername</code> or a phone number).",
+            _kb([NAV])); return
+    if data == "adm:settings:admins":
+        ids = sorted(settings.ADMIN_IDS)
+        txt = "👥 <b>Admin IDs</b>\n\n" + "\n".join(f"• <code>{i}</code>" for i in ids)
+        await _safe_edit(q, txt,
+            _kb([[("➕ Add Admin", "adm:settings:admin_add"),
+                  ("➖ Remove Admin", "adm:settings:admin_del")],
+                 [("🏠 Menu", "adm:home")]]))
+        return
+    if data == "adm:settings:admin_add":
+        ADMIN_STATE[uid] = {"action": "admin_add", "step": "value", "data": {}}
+        await _safe_edit(q, "➕ Send the <b>Telegram ID</b> of the new admin.",
+                         _kb([NAV])); return
+    if data == "adm:settings:admin_del":
+        ids = sorted(settings.ADMIN_IDS - {uid})
+        if not ids:
+            await _safe_edit(q, "No other admins to remove.",
+                             _kb([[("🏠 Menu", "adm:home")]])); return
+        rows = [[(f"➖ {i}", f"adm:settings:admin_rm:{i}")] for i in ids]
+        rows.append([("🏠 Menu", "adm:home")])
+        await _safe_edit(q, "Pick an admin to remove:", _kb(rows)); return
+    if data.startswith("adm:settings:admin_rm:"):
+        rid = int(data.split(":")[3])
+        if rid == uid:
+            await _safe_edit(q, "❌ You cannot remove yourself.",
+                             _kb([[("🏠 Menu", "adm:home")]])); return
+        settings.ADMIN_IDS.discard(rid)
+        db.execute(
+            "INSERT INTO settings(key,value) VALUES('EXTRA_ADMIN_IDS',%s) "
+            "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
+            (",".join(str(i) for i in sorted(settings.ADMIN_IDS)),))
+        await _safe_edit(q, f"➖ Admin <code>{rid}</code> removed.",
+                         _kb([[("🏠 Menu", "adm:home")]])); return
     if data.startswith("adm:settings:key:"):
         key = data.split(":", 3)[3]
         ADMIN_STATE[uid] = {"action": "set_setting", "step": "value",
@@ -950,6 +990,10 @@ async def _sec_settings(q) -> None:
         val = getattr(settings, k)
         txt += f"• <b>{k}</b>: <code>{val}</code>\n"
         rows.append([(f"✏️ {k}", f"adm:settings:key:{k}")])
+    txt += f"\n📞 <b>ADMIN_CONTACT</b>: <code>{getattr(settings, 'ADMIN_CONTACT', '')}</code>\n"
+    txt += f"👥 <b>Admin IDs</b>: <code>{sorted(settings.ADMIN_IDS)}</code>"
+    rows.append([("📞 Change Buy-Contact", "adm:settings:contact")])
+    rows.append([("👥 Manage Admins", "adm:settings:admins")])
     rows.append([("🔑 Change Admin Password", "adm:settings:pw")])
     rows.append([("🏠 Menu", "adm:home")])
     await _safe_edit(q, txt, _kb(rows))
@@ -977,6 +1021,36 @@ async def _step_set_pw(update, context, st, txt: str) -> None:
         "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value", (txt,))
     _reset(update.effective_user.id)
     await update.message.reply_text("✅ Admin password updated.", reply_markup=_home_kb())
+
+
+async def _step_set_contact(update, context, st, txt: str) -> None:
+    settings.ADMIN_CONTACT = txt.strip()
+    db.execute(
+        "INSERT INTO settings(key,value) VALUES('ADMIN_CONTACT',%s) "
+        "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value", (settings.ADMIN_CONTACT,))
+    _reset(update.effective_user.id)
+    await update.message.reply_text(
+        f"✅ Buy-contact set to <code>{settings.ADMIN_CONTACT}</code>.\n"
+        f"Users will see this whenever they tap 💳 Buy Now.",
+        parse_mode=ParseMode.HTML, reply_markup=_home_kb())
+
+
+async def _step_admin_add(update, context, st, txt: str) -> None:
+    try:
+        new_id = int(txt.strip())
+    except ValueError:
+        await update.message.reply_text("Must be a numeric Telegram ID.")
+        return
+    settings.ADMIN_IDS.add(new_id)
+    db.execute(
+        "INSERT INTO settings(key,value) VALUES('EXTRA_ADMIN_IDS',%s) "
+        "ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value",
+        (",".join(str(i) for i in sorted(settings.ADMIN_IDS)),))
+    _reset(update.effective_user.id)
+    await update.message.reply_text(
+        f"✅ <code>{new_id}</code> is now an admin.\n"
+        f"They must send /admin and use the password to unlock the panel.",
+        parse_mode=ParseMode.HTML, reply_markup=_home_kb())
 
 
 # ═════════════ BROADCAST ═════════════

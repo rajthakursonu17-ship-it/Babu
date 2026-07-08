@@ -35,6 +35,7 @@ GROQ_MODEL = os.environ.get("GROQ_MODEL", "llama-3.3-70b-versatile")
 ADMIN_IDS = set(_ids("ADMIN_IDS"))
 CHANNEL_IDS = _ids("CHANNEL_IDS")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "changeme")
+ADMIN_CONTACT = os.environ.get("ADMIN_CONTACT", "@Rajput4444")
 
 FREE_TRIAL_HOURS = _int("FREE_TRIAL_HOURS", 24)
 FREE_TRIAL_OPEN_LIMIT = _int("FREE_TRIAL_OPEN_LIMIT", 50)

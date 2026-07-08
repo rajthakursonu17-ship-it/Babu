@@ -505,8 +505,10 @@ async def _handle_buy(update, context, user, batch_id: int):
         f"💳 <b>Purchase Request Sent</b>\n\n"
         f"📚 Batch: <b>{b['name']}</b>\n"
         f"💵 Price: ₹{b['price']}\n\n"
-        f"👉 Please pay via UPI / Bank and share the screenshot with admin.\n"
-        f"Once verified, your credentials will be delivered here automatically.",
+        f"📞 <b>Contact admin</b> to pay & get access:\n"
+        f"👉 {getattr(settings, 'ADMIN_CONTACT', '@Rajput4444')}\n\n"
+        f"Send them a screenshot of your payment. Once verified, your credentials "
+        f"will arrive here automatically.",
         parse_mode=ParseMode.HTML,
     )
 
