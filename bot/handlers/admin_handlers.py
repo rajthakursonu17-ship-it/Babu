@@ -32,6 +32,7 @@ from telegram.ext import (
 from config import settings
 from database import db
 from utils import ui_helpers as ui
+from utils import link_parser
 from jobs import channel_scanner
 
 logger = logging.getLogger(__name__)
@@ -126,7 +127,8 @@ def _crud_kb(section: str) -> InlineKeyboardMarkup:
     ]
     if section == "lecture":
         rows[-1].append(("📥 Bulk Add", "adm:bulk:lecture"))
-        rows.append([("📎 Attach PDF/DPP", "adm:attach:lecture")])
+        rows.append([("🔗 Add via Link", "adm:linkadd:lecture"),
+                     ("📎 Attach PDF/DPP", "adm:attach:lecture")])
     rows.append([("🏠 Menu", "adm:home")])
     return _kb(rows)
 
@@ -161,6 +163,7 @@ async def admin_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "scan": _step_scan,
         "check_rights": _step_check_rights,
         "search_user": _step_search_user,
+        "linkadd": _step_linkadd,
     }
     fn = handlers.get(action)
     if fn:
@@ -284,6 +287,40 @@ async def on_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             f"📎 Send the <b>{slot.upper()} PDF</b> to me now (as a document).\n"
             f"It will be attached to lecture #{lid}.",
             _kb([NAV])); return
+
+    # Add lecture by Telegram message link (multi-step)
+    if data == "adm:linkadd:lecture":
+        await _pick_subject_for(uid, q, purpose="linkadd_pickchap"); return
+    if data.startswith("adm:linkadd:chap:"):
+        # adm:linkadd:chap:<subject_id>:new  OR  <subject_id>:<chapter_id>
+        _, _, _, sub, third = data.split(":")
+        sub_id = int(sub)
+        if third == "new":
+            ADMIN_STATE[uid] = {"action": "linkadd", "step": "chapter_name",
+                                "data": {"subject_id": sub_id}}
+            await _safe_edit(q, "📝 Send the <b>new chapter name</b>:", _kb([NAV]))
+            return
+        chap_id = int(third)
+        ADMIN_STATE[uid] = {"action": "linkadd", "step": "lecture_name",
+                            "data": {"subject_id": sub_id, "chapter_id": chap_id, "count": 0}}
+        await _safe_edit(q,
+            "🎥 <b>Adding lectures by link</b>\n\n"
+            "Step 1/4 — send the <b>lecture name</b> (e.g. 'Lecture 1 – Intro').",
+            _kb([NAV]))
+        return
+    if data == "adm:linkadd:next":
+        st = ADMIN_STATE.get(uid) or {}
+        if st.get("action") != "linkadd":
+            await _safe_edit(q, "Session lost.", _home_kb()); return
+        st["step"] = "lecture_name"
+        st["data"].pop("current", None)
+        await _safe_edit(q, "🎥 Send the <b>next lecture's name</b>:", _kb([NAV]))
+        return
+    if data == "adm:linkadd:done":
+        st = ADMIN_STATE.pop(uid, None) or {}
+        count = st.get("data", {}).get("count", 0)
+        await _safe_edit(q, f"✅ Done. Added <b>{count}</b> lecture(s).", _home_kb())
+        return
 
     # picker callbacks: adm:pick:<section>:<id>[:<purpose>]
     if data.startswith("adm:pick:"):
@@ -655,6 +692,20 @@ async def _handle_pick(uid, q, data: str) -> None:
             ]))
         return
 
+    if purpose == "linkadd_pickchap":
+        # `iid` is the subject_id
+        chaps = db.query(
+            "SELECT chapter_id, name FROM chapters WHERE subject_id=%s ORDER BY name",
+            (iid,),
+        )
+        rows = [[(f"📝 {c['name']}", f"adm:linkadd:chap:{iid}:{c['chapter_id']}")]
+                for c in chaps]
+        rows.append([("➕ New Chapter", f"adm:linkadd:chap:{iid}:new")])
+        rows.append(NAV)
+        await _safe_edit(q,
+            "📝 Pick an existing chapter, or create a new one:", _kb(rows))
+        return
+
     # edit flow — show field picker
     if purpose.startswith("edit_"):
         await _edit_field_picker(uid, q, section, iid); return
@@ -1005,6 +1056,116 @@ async def _step_scan(update, context, st, txt: str) -> None:
         await update.message.reply_text("Pick a subject to attach scanned lectures to:",
                                         reply_markup=InlineKeyboardMarkup(buttons))
         return
+
+# ═════════════ Add lectures by Telegram message LINK ═════════════
+async def _step_linkadd(update, context, st, txt: str) -> None:
+    d = st["data"]; step = st["step"]
+    kb_nav = _kb([NAV])
+
+    if step == "chapter_name":
+        row = db.execute_returning(
+            "INSERT INTO chapters(subject_id, name) VALUES(%s,%s) RETURNING chapter_id",
+            (d["subject_id"], txt))
+        d["chapter_id"] = row["chapter_id"]
+        d["count"] = 0
+        st["step"] = "lecture_name"
+        await update.message.reply_text(
+            f"✅ Chapter '{txt}' created (#{row['chapter_id']}).\n\n"
+            f"🎥 Step 1/4 — send the <b>lecture name</b>:",
+            parse_mode=ParseMode.HTML, reply_markup=kb_nav)
+        return
+
+    if step == "lecture_name":
+        d["current"] = {"name": txt}
+        st["step"] = "video_link"
+        await update.message.reply_text(
+            "🎥 Step 2/4 — send the <b>video message link</b>\n"
+            "(e.g. <code>https://t.me/c/1234567890/45</code>).\n"
+            "Type '-' to skip (video-less lecture).",
+            parse_mode=ParseMode.HTML, reply_markup=kb_nav)
+        return
+
+    if step == "video_link":
+        cur = d.get("current", {})
+        cur["channel_id"] = None; cur["message_id"] = None
+        if txt != "-":
+            ch, mid = link_parser.parse_message_link(txt)
+            if ch is None:
+                await update.message.reply_text(
+                    "❌ Couldn't parse that link.\nSend one like\n"
+                    "<code>https://t.me/c/1234567890/45</code>\nor '-' to skip.",
+                    parse_mode=ParseMode.HTML)
+                return
+            if isinstance(ch, str):
+                await update.message.reply_text(
+                    "⚠️ Public channel link detected. This bot needs a private "
+                    "channel link in the form <code>https://t.me/c/…</code>. "
+                    "Forward any message from that channel to me first to get its id, "
+                    "then use the c-style link.",
+                    parse_mode=ParseMode.HTML)
+                return
+            cur["channel_id"] = ch; cur["message_id"] = mid
+        st["step"] = "pdf_link"
+        await update.message.reply_text(
+            "📄 Step 3/4 — send the <b>Notes PDF link</b> "
+            "(t.me link or any http(s) URL), or '-' to skip.",
+            parse_mode=ParseMode.HTML, reply_markup=kb_nav)
+        return
+
+    if step in ("pdf_link", "dpp_link"):
+        cur = d["current"]
+        slot_msg = "pdf_message_id" if step == "pdf_link" else "dpp_message_id"
+        slot_link = "pdf_link" if step == "pdf_link" else "dpp_link"
+        if txt != "-":
+            ch, mid = link_parser.parse_message_link(txt)
+            if ch is not None and isinstance(ch, int):
+                if cur.get("channel_id") in (None, ch):
+                    cur["channel_id"] = ch
+                    cur[slot_msg] = mid
+                else:
+                    # cross-channel — fall back to the URL
+                    cur[slot_link] = txt
+            elif txt.startswith("http"):
+                cur[slot_link] = txt
+            else:
+                await update.message.reply_text(
+                    "❌ Not a valid link. Send a t.me/… link or a plain URL, or '-'.")
+                return
+        if step == "pdf_link":
+            st["step"] = "dpp_link"
+            await update.message.reply_text(
+                "🧪 Step 4/4 — send the <b>DPP link</b>, or '-' to skip.",
+                parse_mode=ParseMode.HTML, reply_markup=kb_nav)
+            return
+        # finalize
+        row = db.execute_returning(
+            """INSERT INTO lectures(chapter_id, name, channel_id, message_id,
+                                    pdf_message_id, dpp_message_id,
+                                    pdf_link, dpp_link)
+               VALUES(%s,%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (channel_id, message_id) DO UPDATE SET
+                    name = EXCLUDED.name,
+                    pdf_message_id = COALESCE(EXCLUDED.pdf_message_id, lectures.pdf_message_id),
+                    dpp_message_id = COALESCE(EXCLUDED.dpp_message_id, lectures.dpp_message_id),
+                    pdf_link       = COALESCE(EXCLUDED.pdf_link,       lectures.pdf_link),
+                    dpp_link       = COALESCE(EXCLUDED.dpp_link,       lectures.dpp_link)
+               RETURNING lecture_id""",
+            (d["chapter_id"], cur["name"], cur.get("channel_id"), cur.get("message_id"),
+             cur.get("pdf_message_id"), cur.get("dpp_message_id"),
+             cur.get("pdf_link"), cur.get("dpp_link")),
+        )
+        d["count"] += 1
+        await update.message.reply_text(
+            f"✅ Lecture #{row['lecture_id']} saved <b>({d['count']} total in this chapter)</b>.\n\n"
+            f"Add another?",
+            parse_mode=ParseMode.HTML,
+            reply_markup=_kb([
+                [("➕ Next Lecture", "adm:linkadd:next")],
+                [("✅ Done", "adm:linkadd:done")],
+            ]))
+        return
+
+
 
 
 async def _step_check_rights(update, context, st, txt: str) -> None:
