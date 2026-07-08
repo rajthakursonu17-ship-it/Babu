@@ -15,6 +15,7 @@ from database import db
 from handlers import user_handlers as uh
 from handlers import admin_handlers as ah
 from jobs import auto_delete
+from jobs import channel_scanner
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
@@ -64,6 +65,12 @@ def build_app() -> Application:
     # ── CALLBACK QUERIES ─────────────
     app.add_handler(CallbackQueryHandler(ah.on_admin_cb, pattern=r"^adm:"))
     app.add_handler(CallbackQueryHandler(uh.on_callback))
+
+    # ── AUTO-INDEX new channel posts (bot must be admin in the channel) ──
+    app.add_handler(MessageHandler(
+        filters.UpdateType.CHANNEL_POSTS | filters.UpdateType.EDITED_CHANNEL_POST,
+        channel_scanner.on_channel_post,
+    ))
 
     # ── ADMIN FREE-FORM INPUT (only for admin users, non-command) ─────
     admin_only_filter = filters.User(list(settings.ADMIN_IDS))
