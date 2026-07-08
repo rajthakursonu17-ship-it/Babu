@@ -200,6 +200,7 @@ async def on_livecap_pick(update, context) -> None:
         "started_at": time.time(),
         "count": 0,
         "admin_id": q.from_user.id,
+        "pending_docs": [],   # messages received before any video
     }
     sub = db.query("SELECT name FROM subjects WHERE subject_id=%s", (subject_id,), one=True)
     await q.edit_message_text(
@@ -235,15 +236,19 @@ async def on_channel_post(update, context) -> None:
 
     ch_id = msg.chat.id
     cap = LIVE_CAPTURE.get(ch_id)
+    kind = _classify(msg)
+    logger.info("[channel_post] ch=%s mid=%s kind=%s has_video=%s has_doc=%s has_photo=%s mime=%s cap=%s",
+                ch_id, msg.message_id, kind,
+                bool(msg.video), bool(msg.document), bool(msg.photo),
+                (msg.document.mime_type if msg.document else None),
+                bool(cap))
 
     # If no live capture, fall back to old auto-index (last scan_job for channel)
     if cap is None:
         await _fallback_index(update, context)
         return
 
-    kind = _classify(msg)
-
-    # ── Video → new lecture ──
+    # ── Video (or video-mime document) → new lecture, flush pending docs ──
     if kind == "video":
         caption = _caption_of(msg) or f"Lecture {msg.message_id}"
         parsed = groq_parser.parse_caption(caption)
@@ -257,38 +262,39 @@ async def on_channel_post(update, context) -> None:
             cap["last_lecture_id"] = lec_id
             cap["last_media_group_id"] = msg.media_group_id
             cap["count"] += 1
-            logger.info("[livecap] ch=%s video mid=%s -> lecture %s", ch_id, msg.message_id, lec_id)
+            logger.info("[livecap] ch=%s video mid=%s -> lecture %s '%s'",
+                        ch_id, msg.message_id, lec_id, lec_name)
+            # attach any pending docs that arrived before this video
+            pend = cap.get("pending_docs") or []
+            for pmsg_id, ptype in pend:
+                await _attach_doc_to_lecture(lec_id, ch_id, pmsg_id, ptype)
+            cap["pending_docs"] = []
+            # DM admin
+            await _dm(context.bot, cap["admin_id"],
+                f"🎥 Captured: <b>{lec_name}</b> (lec #{lec_id})"
+                + (f"\n📎 Also attached {len(pend)} earlier document(s)." if pend else ""))
         return
 
-    # ── Document (PDF), other doc, or url text → attach to last lecture ──
-    if kind in ("pdf", "doc", "url"):
+    # ── PDF/document → attach to last lecture, or buffer ──
+    if kind in ("pdf", "doc"):
         lec_id = cap.get("last_lecture_id")
         if not lec_id:
-            logger.info("[livecap] doc/url received before any video – ignoring")
+            cap.setdefault("pending_docs", []).append((msg.message_id, "doc"))
+            logger.info("[livecap] buffered pre-video doc mid=%s (queue size=%d)",
+                        msg.message_id, len(cap["pending_docs"]))
+            await _dm(context.bot, cap["admin_id"],
+                f"📎 Buffered document (msg {msg.message_id}). "
+                f"It will attach to the next video you post. "
+                f"Queue: {len(cap['pending_docs'])}")
             return
+        await _attach_doc_to_lecture(lec_id, ch_id, msg.message_id, "doc")
+        return
 
-        # If same media_group as last video, attach for sure; else still attach
-        if kind in ("pdf", "doc"):
-            # store message_id → we'll `copy_message` to user on request
-            cur = db.query(
-                "SELECT pdf_message_id, dpp_message_id FROM lectures WHERE lecture_id=%s",
-                (lec_id,), one=True,
-            )
-            if not cur["pdf_message_id"]:
-                db.execute(
-                    "UPDATE lectures SET pdf_message_id=%s WHERE lecture_id=%s",
-                    (msg.message_id, lec_id))
-                logger.info("[livecap] pdf attached mid=%s -> lecture %s", msg.message_id, lec_id)
-            elif not cur["dpp_message_id"]:
-                db.execute(
-                    "UPDATE lectures SET dpp_message_id=%s WHERE lecture_id=%s",
-                    (msg.message_id, lec_id))
-                logger.info("[livecap] dpp attached mid=%s -> lecture %s", msg.message_id, lec_id)
-            return
-
-        # URL text
+    # ── URL text ──
+    if kind == "url":
         url = _extract_url(msg.text or "")
-        if not url:
+        lec_id = cap.get("last_lecture_id")
+        if not lec_id or not url:
             return
         cur = db.query(
             "SELECT pdf_link, dpp_link FROM lectures WHERE lecture_id=%s",
@@ -296,8 +302,31 @@ async def on_channel_post(update, context) -> None:
         )
         if not cur["pdf_link"]:
             db.execute("UPDATE lectures SET pdf_link=%s WHERE lecture_id=%s", (url, lec_id))
+            logger.info("[livecap] pdf_link attached -> lecture %s", lec_id)
         elif not cur["dpp_link"]:
             db.execute("UPDATE lectures SET dpp_link=%s WHERE lecture_id=%s", (url, lec_id))
+            logger.info("[livecap] dpp_link attached -> lecture %s", lec_id)
+
+
+async def _attach_doc_to_lecture(lec_id: int, channel_id: int,
+                                 msg_id: int, ptype: str) -> None:
+    cur = db.query(
+        "SELECT pdf_message_id, dpp_message_id FROM lectures WHERE lecture_id=%s",
+        (lec_id,), one=True,
+    )
+    if not cur:
+        return
+    if not cur["pdf_message_id"]:
+        db.execute("UPDATE lectures SET pdf_message_id=%s WHERE lecture_id=%s",
+                   (msg_id, lec_id))
+        logger.info("[livecap] pdf attached mid=%s -> lecture %s", msg_id, lec_id)
+    elif not cur["dpp_message_id"]:
+        db.execute("UPDATE lectures SET dpp_message_id=%s WHERE lecture_id=%s",
+                   (msg_id, lec_id))
+        logger.info("[livecap] dpp attached mid=%s -> lecture %s", msg_id, lec_id)
+    else:
+        logger.info("[livecap] both slots full — extra doc mid=%s dropped from lecture %s",
+                    msg_id, lec_id)
 
 
 async def _fallback_index(update, context) -> None:
