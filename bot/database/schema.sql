@@ -48,9 +48,14 @@ CREATE TABLE IF NOT EXISTS lectures (
     channel_id BIGINT,
     pdf_link   TEXT,
     dpp_link   TEXT,
+    pdf_message_id BIGINT,
+    dpp_message_id BIGINT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(channel_id, message_id)
 );
+-- add columns for legacy DBs
+ALTER TABLE lectures ADD COLUMN IF NOT EXISTS pdf_message_id BIGINT;
+ALTER TABLE lectures ADD COLUMN IF NOT EXISTS dpp_message_id BIGINT;
 
 CREATE TABLE IF NOT EXISTS user_lecture_access (
     id              BIGSERIAL PRIMARY KEY,

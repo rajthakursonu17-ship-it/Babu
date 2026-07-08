@@ -64,6 +64,7 @@ def build_app() -> Application:
 
     # ── CALLBACK QUERIES ─────────────
     app.add_handler(CallbackQueryHandler(ah.on_admin_cb, pattern=r"^adm:"))
+    app.add_handler(CallbackQueryHandler(channel_scanner.on_livecap_pick, pattern=r"^livecap:"))
     app.add_handler(CallbackQueryHandler(uh.on_callback))
 
     # ── AUTO-INDEX new channel posts (bot must be admin in the channel) ──

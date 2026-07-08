@@ -156,6 +156,7 @@ async def admin_text_router(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         "set_setting": _step_set_setting,
         "set_pw": _step_set_pw,
         "scan": _step_scan,
+        "check_rights": _step_check_rights,
         "search_user": _step_search_user,
     }
     fn = handlers.get(action)
@@ -292,6 +293,13 @@ async def on_admin_cb(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         ADMIN_STATE[uid] = {"action": "scan", "step": "batch_code",
                             "data": {"resume": True}}
         await _safe_edit(q, "🔄 Send the <b>batch_code</b> for delta scan.", _kb([NAV])); return
+    if data == "adm:scan:check":
+        ADMIN_STATE[uid] = {"action": "check_rights", "step": "channel_id", "data": {}}
+        await _safe_edit(q,
+            "🔍 Send the <b>channel_id</b> to verify the bot's admin rights.\n"
+            "Tip: forward any message from that channel to me first, then paste the "
+            "numeric id shown in it (e.g. <code>-1001234567890</code>).",
+            _kb([NAV])); return
 
 
 async def _safe_edit(q, text, reply_markup=None):
@@ -880,15 +888,25 @@ async def _step_broadcast(update, context, st, txt: str) -> None:
 async def _sec_scan(q) -> None:
     jobs = db.query("SELECT * FROM scan_jobs ORDER BY started_at DESC LIMIT 5")
     txt = "🛰️ <b>Channel Scan</b>\n\n"
-    txt += ("Add the bot as <b>admin</b> in your source channel (with post + "
-            "delete rights), then start a scan.\n\n<b>Recent jobs:</b>\n")
+    txt += (
+        "🎬 <b>Recommended: Live Capture</b>\n"
+        "1. Add <b>@Babujiihebot</b> as <b>admin</b> in your channel\n"
+        "2. Post <code>/scan BATCHCODE</code> <i>inside the channel</i>\n"
+        "3. Pick subject in the DM I send you\n"
+        "4. Upload video → PDF (Notes) → PDF (DPP) → repeat\n"
+        "5. Post <code>/done</code> in channel when finished\n\n"
+        "The bot auto-groups every video with its next 2 documents "
+        "as Notes + DPP, and names each lecture from the caption.\n\n"
+        "<b>Recent jobs:</b>\n"
+    )
     if not jobs:
         txt += "None yet."
     for j in jobs:
         txt += f"#{j['job_id']} • {j['status']} • {j['total_processed']}/{j['total_found']}\n"
     await _safe_edit(q, txt,
-        _kb([[("🆕 New Full Scan", "adm:scan:new")],
-             [("🔄 Delta Update", "adm:scan:update")],
+        _kb([[("🔍 Check Bot Rights", "adm:scan:check")],
+             [("🆕 Historical Full Scan", "adm:scan:new"),
+              ("🔄 Delta Scan", "adm:scan:update")],
              [("🏠 Menu", "adm:home")]]))
 
 
@@ -925,6 +943,18 @@ async def _step_scan(update, context, st, txt: str) -> None:
         await update.message.reply_text("Pick a subject to attach scanned lectures to:",
                                         reply_markup=InlineKeyboardMarkup(buttons))
         return
+
+
+async def _step_check_rights(update, context, st, txt: str) -> None:
+    try:
+        ch_id = int(txt.strip())
+    except ValueError:
+        await update.message.reply_text("Channel ID must be a negative integer like -1001234567890.")
+        return
+    _reset(update.effective_user.id)
+    status = await channel_scanner.check_channel_access(context.bot, ch_id)
+    await update.message.reply_text(status, parse_mode=ParseMode.HTML,
+                                    reply_markup=_home_kb())
 
 
 # handle scan subject pick via callback
